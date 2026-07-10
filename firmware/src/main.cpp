@@ -7,15 +7,15 @@
 #include <optional>
 
 // Configs (Static Memory)
-constexpr auto ssid              = "YOUR_WIFI_SSID";
-constexpr auto password          = "YOUR_WIFI_PASSWORD";
-constexpr auto supabase_url      = "https://your-project-id.supabase.co/rest/v1/pm_logs";
-constexpr auto supabase_anon_key = "YOUR_SUPABASE_ANON_KEY";
+constexpr auto ssid              = "Phukrit";
+constexpr auto password          = "";
+constexpr auto supabase_url      = "https://wvvfbosiwsevcroxbmod.supabase.co/rest/v1/pm_logs";
+constexpr auto supabase_anon_key = "";
 constexpr uint32_t upload_interval = 60000;
 
 static char auth_token_buffer[512] = {0};
 
-SoftwareSerial pmsSerial(D2, D3);
+SoftwareSerial pmsSerial;
 PMS pms(pmsSerial);
 PMS::DATA data;
 
@@ -93,7 +93,7 @@ void taskUploadToCloud() {
 
 void setup() {
     Serial.begin(9600);
-    pmsSerial.begin(9600);
+    pmsSerial.begin(9600, SWSERIAL_8N1, 14, 12);
 
     snprintf(auth_token_buffer, sizeof(auth_token_buffer), "Bearer %s", supabase_anon_key);
 
