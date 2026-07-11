@@ -6,14 +6,27 @@
 #include <PMS.h>
 #include <optional>
 
+#ifndef WIFI_SSID
+#error "WIFI_SSID is not defined. Add it via build_flags (see platformio.ini / secrets.ini)."
+#endif
+#ifndef WIFI_PASS
+#error "WIFI_PASS is not defined. Add it via build_flags (see platformio.ini / secrets.ini)."
+#endif
+#ifndef SUPABASE_URL
+#error "SUPABASE_URL is not defined. Add it via build_flags (see platformio.ini / secrets.ini)."
+#endif
+#ifndef SUPABASE_KEY
+#error "SUPABASE_KEY is not defined. Add it via build_flags (see platformio.ini / secrets.ini)."
+#endif
+
 // Configs (Static Memory)
-constexpr auto ssid              = "Phukrit";
-constexpr auto password          = "";
-constexpr auto supabase_url      = "https://wvvfbosiwsevcroxbmod.supabase.co/rest/v1/pm_logs";
-constexpr auto supabase_anon_key = "";
+constexpr auto ssid     = WIFI_SSID;
+constexpr auto password = WIFI_PASS;
+constexpr auto supabase_url      = SUPABASE_URL;
+constexpr auto supabase_anon_key = SUPABASE_KEY;
 constexpr uint32_t upload_interval = 60000;
 
-static char auth_token_buffer[512] = {0};
+static char auth_token_buffer[sizeof(SUPABASE_KEY) + 8] = {0};
 
 SoftwareSerial pmsSerial;
 PMS pms(pmsSerial);
