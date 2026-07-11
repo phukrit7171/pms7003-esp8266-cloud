@@ -5,7 +5,12 @@
 	import LiveIndicator from '$lib/components/LiveIndicator.svelte';
 	import PmChart from '$lib/components/PmChart.svelte';
 	import { formatNumber, formatTimestamp, relativeTime } from '$lib/aqi';
-	import { fetchPmLogs, type PmLog } from '$lib/supabase';
+	import {
+		fetchPmLogs,
+		subscribePmLogsInsert,
+		type PmLog,
+		type RealtimeStatus
+	} from '$lib/supabase';
 	import type { PageData } from './$types';
 
 	interface Props {
@@ -14,7 +19,7 @@
 
 	let { data }: Props = $props();
 
-	const POLL_MS = 30_000;
+	const MAX_LOGS = 1000;
 
 	let logs = $state<PmLog[]>(untrack(() => data.logs));
 	let error = $state<string | null>(untrack(() => data.error));
@@ -22,8 +27,8 @@
 	let lastUpdated = $state<Date | null>(
 		untrack(() => (data.fetchedAt ? new Date(data.fetchedAt) : null))
 	);
-	let pollHandle: ReturnType<typeof setInterval> | null = null;
-	let inFlight: AbortController | null = null;
+	let unsubscribe: (() => void) | null = null;
+	let manualRefreshInFlight = false;
 
 	type LiveStatus = 'live' | 'updating' | 'stale' | 'error' | 'offline';
 	let liveStatus = $state<LiveStatus>(untrack(() => (data.logs.length > 0 ? 'live' : 'offline')));
@@ -36,54 +41,85 @@
 		latestAt: latest?.created_at ?? null
 	});
 
-	async function refresh() {
+	function prependLog(row: PmLog) {
+		const current = untrack(() => logs);
+		if (current.some((r) => r.id === row.id)) return;
+		const next = [row, ...current];
+		next.sort((a, b) => b.created_at.localeCompare(a.created_at));
+		logs = next.length > MAX_LOGS ? next.slice(0, MAX_LOGS) : next;
+		lastUpdated = new Date();
+		if (liveStatus !== 'live') liveStatus = 'live';
+	}
+
+	async function refresh(): Promise<void> {
 		if (!browser || !configured) return;
-		inFlight?.abort();
-		const ctrl = new AbortController();
-		inFlight = ctrl;
+		if (manualRefreshInFlight) return;
+		manualRefreshInFlight = true;
 		liveStatus = 'updating';
 		try {
-			const fresh = await fetchPmLogs({ limit: 500, signal: ctrl.signal });
-			logs = fresh;
+			const fresh = await fetchPmLogs({ limit: 500 });
+			logs = fresh.length > MAX_LOGS ? fresh.slice(0, MAX_LOGS) : fresh;
 			error = null;
 			lastUpdated = new Date();
 			liveStatus = 'live';
 		} catch (err) {
-			if ((err as { name?: string })?.name === 'AbortError') return;
 			error = err instanceof Error ? err.message : 'Failed to refresh readings.';
+			liveStatus = 'error';
+		} finally {
+			manualRefreshInFlight = false;
+		}
+	}
+
+	function openSubscription() {
+		if (!browser || !configured || unsubscribe) return;
+		try {
+			unsubscribe = subscribePmLogsInsert({
+				onInsert: prependLog,
+				onStatus: (status: RealtimeStatus) => {
+					switch (status) {
+						case 'live':
+							liveStatus = 'live';
+							break;
+						case 'connecting':
+							liveStatus = 'updating';
+							break;
+						case 'error':
+							liveStatus = 'error';
+							break;
+						case 'offline':
+							liveStatus = 'offline';
+							break;
+					}
+				}
+			});
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to open realtime connection.';
 			liveStatus = 'error';
 		}
 	}
 
-	function startPolling() {
-		if (!browser || !configured || pollHandle !== null) return;
-		pollHandle = setInterval(refresh, POLL_MS);
-	}
-
-	function stopPolling() {
-		if (pollHandle !== null) {
-			clearInterval(pollHandle);
-			pollHandle = null;
+	function closeSubscription() {
+		if (unsubscribe) {
+			unsubscribe();
+			unsubscribe = null;
 		}
-		inFlight?.abort();
-		inFlight = null;
 	}
 
 	$effect(() => {
 		if (!browser) return;
 		const handleVisibility = () => {
 			if (document.hidden) {
-				stopPolling();
+				closeSubscription();
 			} else {
 				refresh();
-				startPolling();
+				openSubscription();
 			}
 		};
 		document.addEventListener('visibilitychange', handleVisibility);
-		startPolling();
+		openSubscription();
 		return () => {
 			document.removeEventListener('visibilitychange', handleVisibility);
-			stopPolling();
+			closeSubscription();
 		};
 	});
 </script>
@@ -143,8 +179,7 @@
 				<div>
 					<h2 id="chart-heading" class="text-lg font-semibold text-slate-100">History</h2>
 					<p class="text-xs text-slate-500">
-						{totals.samples} sample{totals.samples === 1 ? '' : 's'} loaded · refreshes every
-						{POLL_MS / 1000}s
+						{totals.samples} sample{totals.samples === 1 ? '' : 's'} loaded · streaming via Supabase Realtime
 					</p>
 				</div>
 			</div>

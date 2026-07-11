@@ -1,3 +1,5 @@
+import { browser } from '$app/environment';
+import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
 import { env as publicEnv } from '$env/dynamic/public';
 
 export interface PmLog {
@@ -22,6 +24,31 @@ function readConfig(): SupabaseConfig {
 export function hasSupabaseConfig(): boolean {
 	const { url, anonKey } = readConfig();
 	return url.length > 0 && anonKey.length > 0;
+}
+
+export type RealtimeStatus = 'connecting' | 'live' | 'error' | 'offline';
+
+function requireBrowser(): void {
+	if (!browser) {
+		throw new Error('Supabase realtime must run in the browser.');
+	}
+}
+
+let client: SupabaseClient | null = null;
+
+export function getSupabaseClient(): SupabaseClient {
+	requireBrowser();
+	if (client) return client;
+
+	const { url, anonKey } = readConfig();
+	if (!url || !anonKey) {
+		throw new Error('Supabase is not configured.');
+	}
+
+	client = createClient(url, anonKey, {
+		realtime: { params: { eventsPerSecond: 10 } }
+	});
+	return client;
 }
 
 export async function fetchPmLogs(
@@ -49,4 +76,48 @@ export async function fetchPmLogs(
 
 	const rows = (await res.json()) as PmLog[];
 	return rows;
+}
+
+export interface SubscribePmLogsInsertOptions {
+	onInsert: (row: PmLog) => void;
+	onStatus: (status: RealtimeStatus) => void;
+}
+
+export function subscribePmLogsInsert({
+	onInsert,
+	onStatus
+}: SubscribePmLogsInsertOptions): () => void {
+	requireBrowser();
+	const supabase = getSupabaseClient();
+	let channel: RealtimeChannel | null = null;
+
+	channel = supabase
+		.channel('pm_logs-inserts')
+		.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pm_logs' }, (payload) => {
+			onInsert(payload.new as PmLog);
+		})
+		.subscribe((status, err) => {
+			switch (status) {
+				case 'SUBSCRIBED':
+					onStatus('live');
+					break;
+				case 'CHANNEL_ERROR':
+				case 'TIMED_OUT':
+					console.error('Supabase realtime error', err);
+					onStatus('error');
+					break;
+				case 'CLOSED':
+					onStatus('offline');
+					break;
+				default:
+					onStatus('connecting');
+			}
+		});
+
+	return () => {
+		if (channel) {
+			supabase.removeChannel(channel);
+			channel = null;
+		}
+	};
 }
