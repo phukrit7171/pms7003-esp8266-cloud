@@ -1,41 +1,43 @@
 # PMS7003 Cloud Air‑Quality Monitor
 
-An end‑to‑end **PM2.5 / PM10 air‑quality monitoring** stack: a **WeMos D1 R1** (ESP8266) reads a **PMS7003** particulate‑matter sensor over UART, pushes each sample to **Supabase**, and a **SvelteKit** dashboard (deployed to **Vercel**) visualises the readings in near‑real time.
-
-> Status: initial scaffold. The `firmware/src/main.cpp` and `app/src/routes/+page.svelte` are placeholders — this README documents the target architecture so each piece can be filled in.
+A **PM1.0 / PM2.5 / PM10 air‑quality monitoring** stack: a **WeMos D1 R1** (ESP8266) reads a **PMS7003** particulate‑matter sensor over UART, `POST`s each sample to **Supabase**, and a **SvelteKit** dashboard (deployed to **Vercel**) renders the data — currently a placeholder while the firmware side is live.
 
 ```mermaid
 flowchart LR
-  PMS[PMS7003 sensor] -- UART --> MCU[WeMos D1 R1<br/>ESP8266]
-  MCU -- Wi‑Fi / HTTPS<br/>(Supabase REST) --> SB[(Supabase Postgres<br/>readings table)]
-  SB -- PostgREST +<br/>Realtime channel --> App[SvelteKit dashboard<br/>Vercel]
+  PMS[PMS7003 sensor] -- UART<br/>GPIO14 (RX) / GPIO13 (TX) --> MCU[WeMos D1 R1<br/>ESP8266]
+  MCU -- Wi‑Fi / HTTPS<br/>POST /rest/v1/pm_logs --> SB[(Supabase Postgres<br/>pm_logs table)]
+  SB -- PostgREST --> App[SvelteKit dashboard<br/>Vercel]
   User([Browser]) --> App
 ```
 
+> The firmware on `firmware/src/main.cpp` is implemented and uploading today. The SvelteKit dashboard under `app/src/routes/` is still the default starter page — see [Roadmap](#-roadmap).
+
+For the hardware build (BOM, wiring, pin-safety rationale, first-power-up checklist), see [`firmware/hardware/README.md`](firmware/hardware/README.md).
+
 ---
 
-## ✨ Features
+## ✨ What works today
 
-- 📡 **Wireless air‑quality node** — no cables back to a laptop; the sensor just needs Wi‑Fi.
-- 🌫 **PM1.0 / PM2.5 / PM10** mass‑concentration readings (μg/m³) plus derived AQI.
-- ☁️ **Cloud persistence** — every reading lands in Supabase Postgres with a timestamp.
-- 📊 **Live dashboard** — Vercel‑hosted SvelteKit UI with charts and recent‑reading cards.
-- 🔌 **Cheap & open** — ~$10 of hardware, MIT‑licensed firmware and frontend.
+- ✅ PMS7003 frame parsing via [`fu-hsi/PMS Library`](https://github.com/fu-hsi/PMS)
+- ✅ Wi‑Fi connection (background, non‑blocking on first boot)
+- ✅ Local serial logging every loop tick: `[Sensor Task] Local Realtime -> PM1: … | PM2.5: … | PM10: …`
+- ✅ Supabase `POST` every `upload_interval` ms (default **60 s**), with a connectivity skip when offline so the loop never blocks waiting for the cloud
+- ✅ One‑in‑one‑out sample buffer (`std::optional<PmData>`) — the sensor never waits for the upload
 
 ---
 
 ## 🧰 Tech stack
 
-| Layer        | Tech                                                          |
-| ------------ | ------------------------------------------------------------- |
-| Sensor       | Plantower **PMS7003** (laser‑scattering PM sensor, UART 9600) |
-| MCU          | **WeMos D1 R1** (ESP8266, 80 MHz, Wi‑Fi)                     |
-| Firmware     | **PlatformIO** + Arduino framework, C++                      |
-| Backend      | **Supabase** (Postgres + REST + Realtime)                     |
-| Frontend     | **SvelteKit 2** + **Svelte 5** + **TypeScript**               |
-| Styling      | **Tailwind CSS 4**                                            |
-| Deploy       | **Vercel** (via `@sveltejs/adapter-vercel`)                   |
-| Package mgr  | **pnpm** (workspace root, in `app/`)                          |
+| Layer        | Tech                                                              |
+| ------------ | ----------------------------------------------------------------- |
+| Sensor       | **PMS7003** (Plantower, UART 9600 8N1)                            |
+| MCU          | **WeMos D1 R1** (ESP8266, 80 MHz, Wi‑Fi)                         |
+| Firmware     | **PlatformIO** + Arduino framework, C++20 (`-std=gnu++20`)        |
+| Cloud DB     | **Supabase** (Postgres + PostgREST)                               |
+| Frontend     | **SvelteKit 2** + **Svelte 5** (runes mode forced) + TypeScript   |
+| Styling      | **Tailwind CSS 4**                                                |
+| Deploy       | **Vercel** via `@sveltejs/adapter-vercel`                         |
+| Package mgr  | **pnpm**                                                          |
 
 ---
 
@@ -47,13 +49,12 @@ pms7003-esp8266-cloud/
 ├── LICENSE            ← MIT
 ├── firmware/          ← PlatformIO project for the WeMos D1 R1
 │   ├── platformio.ini
-│   ├── include/       ← headers + secrets.h (gitignored)
-│   ├── lib/           ← optional local libs
-│   ├── src/main.cpp   ← firmware entry point
+│   ├── include/       ← (reserved for header files)
+│   ├── lib/           ← (reserved for local libs)
+│   ├── src/main.cpp   ← firmware: read sensor + upload to Supabase
 │   └── test/
 └── app/               ← SvelteKit dashboard (Vercel adapter)
     ├── package.json
-    ├── svelte.config.js
     ├── vite.config.ts
     └── src/
         ├── app.html
@@ -74,232 +75,207 @@ pms7003-esp8266-cloud/
 | Qty | Part                                | Notes                       |
 | --- | ----------------------------------- | --------------------------- |
 | 1   | WeMos D1 R1                         | ESP8266, micro‑USB powered  |
-| 1   | PMS7003 module                      | UART, 5 V tolerant         |
+| 1   | PMS7003 module                      | UART 9600 8N1               |
 | 1   | Breadboard + jumper wires           |                             |
-| 1   | Micro‑USB cable                     | For power + flashing       |
+| 1   | Micro‑USB cable                     | Data cable, not charge‑only |
 
 ### Wiring
 
-The PMS7003 speaks UART at **9600 8N1** (3.3 V logic) — connect it to two free GPIOs on the D1 and use `SoftwareSerial` (ESP8266 UART0 is shared with the USB‑serial chip, so don't use `D9`/`D10` for data).
+The PMS7003 speaks UART at **9600 8N1**. The firmware uses `SoftwareSerial` on `D5`/`D6` (ESP8266 GPIOs 14 / 12), which avoids the UART0 pins shared with the USB‑serial chip used for flashing.
 
 | PMS7003 pin | Wire     | WeMos D1 R1 pin | Notes                          |
 | ----------- | -------- | --------------- | ------------------------------ |
 | 1 VCC       | red      | **5V / VIN**    | Sensor fan needs 5 V           |
 | 2 GND       | black    | **G**           | Common ground                  |
-| 5 RX        | green    | **D1** (GPIO5) | MCU **TX** → sensor **RX**    |
-| 6 TX        | yellow   | **D2** (GPIO4) | Sensor **TX** → MCU **RX**    |
+| 5 RX        | green    | **D5** (GPIO14) | MCU **TX** → sensor **RX**    |
+| 6 TX        | yellow   | **D6** (GPIO12) | Sensor **TX** → MCU **RX**    |
 | 3 / 4 / 7 / 8 | —      | leave floating  | RESET, SET, NC                |
 
 ```mermaid
 graph LR
   PMS[PMS7003] -- VCC --> VIN[VIN 5V]
   PMS -- GND --> GND[GND]
-  PMS -- RX --> D1[D1 GPIO5]
-  PMS -- TX --> D2[D2 GPIO4]
+  PMS -- RX --> D5[D5 GPIO14]
+  PMS -- TX --> D6[D6 GPIO12]
   VIN -. power .-> MCU[WeMos D1 R1]
   GND -. ground .-> MCU
-  D1 -. UART .-> MCU
-  D2 -. UART .-> MCU
+  D5 -. UART .-> MCU
+  D6 -. UART .-> MCU
 ```
 
-> If you see garbled frames, double‑check the TX/RX crossover — sensor RX must face MCU TX, and vice versa.
-
-### First‑power checklist
-
-1. Let the PMS7003 fan settle for **≥ 30 s** before trusting readings.
-2. Open the Arduino IDE / PlatformIO **serial monitor at 9600 baud** and confirm you see `BMEC`/`BME` start bytes (0x42 0x4D) — that's a valid PMS frame.
-3. Don't enclose the sensor in a fully sealed box — it needs airflow for the fan.
+> If you see garbled frames, double‑check the TX/RX crossover — sensor RX must face MCU TX, and vice versa. Let the fan settle **≥ 30 s** before trusting the first reading.
 
 ---
 
 ## ☁️ Supabase setup
 
-1. Create a project at [supabase.com](https://supabase.com).
-2. In **SQL editor**, run:
+### 1. Create the table
 
-   ```sql
-   create table public.readings (
-     id          bigint generated by default as identity primary key,
-     device_id   text        not null,
-     pm1_0       real        not null,        -- μg/m³
-     pm2_5       real        not null,        -- μg/m³
-     pm10        real        not null,        -- μg/m³
-     aqi         integer,                    -- optional, derived
-     recorded_at timestamptz not null default now()
-   );
+In **SQL editor**, run:
 
-   create index readings_device_time_idx
-     on public.readings (device_id, recorded_at desc);
+```sql
+create table public.pm_logs (
+  id          bigint generated by default as identity primary key,
+  pm1         integer     not null,        -- μg/m³
+  pm2_5       integer     not null,        -- μg/m³
+  pm10        integer     not null,        -- μg/m³
+  created_at  timestamptz not null default now()
+);
 
-   -- Enable Row Level Security
-   alter table public.readings enable row level security;
+create index pm_logs_created_at_idx
+  on public.pm_logs (created_at desc);
 
-   -- The dashboard reads via the anon key (public).
-   create policy "readings are publicly readable"
-     on public.readings for select
-     using (true);
+-- Row Level Security
+alter table public.pm_logs enable row level security;
 
-   -- Inserting only happens from the firmware with the service role.
-   -- The service role bypasses RLS, so no extra policy is needed.
-   ```
+-- Dashboard reads via the anon key.
+create policy "pm_logs are publicly readable"
+  on public.pm_logs for select
+  using (true);
+```
 
-3. From **Project Settings → API** copy:
-   - **Project URL** (`SUPABASE_URL`)
-   - **anon public** key (`SUPABASE_ANON_KEY`) — used by the dashboard
-   - **service_role** key (`SUPABASE_SERVICE_ROLE_KEY`) — used by the firmware; treat as a secret.
+> The firmware payload is `{"pm1":..,"pm2_5":..,"pm10":..}` — the column names must match exactly.
 
-4. (Optional) Enable **Realtime** on the `readings` table under *Database → Replication* so the dashboard can live‑update without polling.
+### 2. Grab the keys
+
+From **Project Settings → API** you need:
+
+| Key                         | Where it's used                  |
+| --------------------------- | -------------------------------- |
+| **Project URL**             | `supabase_url` in `main.cpp`     |
+| **anon public** key         | `supabase_anon_key` in `main.cpp` (and in the SvelteKit app once you wire it) |
+
+> ⚠️ The current `main.cpp` uses the **anon** key from the device. That works because of the `select` policy above; for production you'll likely want to lock down writes to a service role and add a small access control layer. See [Roadmap](#-roadmap).
 
 ---
 
 ## 🔧 Firmware (`firmware/`)
 
-Built with **PlatformIO**. Target environment: `d1` (WeMos D1 R1, ESP8266, Arduino framework).
+### Config — currently hardcoded
 
-### Secrets
-
-Create `firmware/include/secrets.h` (gitignored) so credentials stay out of git:
+`firmware/src/main.cpp` exposes its config at the top of the file:
 
 ```cpp
-#pragma once
-
-#define WIFI_SSID             "your-ssid"
-#define WIFI_PASSWORD         "your-wifi-password"
-
-#define SUPABASE_URL          "https://YOUR-PROJECT.supabase.co"
-#define SUPABASE_SERVICE_KEY  "ey...service-role-key..."
-
-// How often to push a reading (ms). PMS7003 spec needs ≥ 1 s of stable airflow.
-#define READING_INTERVAL_MS   60000   // 1 min
+constexpr auto ssid              = "Phukrit";
+constexpr auto password          = "...";
+constexpr auto supabase_url      = "https://wvvfbosiwsevcroxbmod.supabase.co/rest/v1/pm_logs";
+constexpr auto supabase_anon_key = "...";
+constexpr uint32_t upload_interval = 60000;   // 60 s
 ```
 
-> Alternatively, pass them with `-DWIFI_SSID=\"...\"` build flags in `platformio.ini` — either approach works; pick one and keep it out of git.
+Edit those four lines (and paste in your Wi‑Fi + Supabase keys), then flash. The credentials live in source today — fine for a single‑device private project, **not** fine the moment you push this to a public repo. Consider moving them to `firmware/include/secrets.h` and `#include`ing it; PIO picks up files in `include/` automatically. The space is already reserved.
+
+### How it behaves
+
+`loop()` runs two non‑RTOS “tasks”:
+
+```text
+taskReadSensor()    every loop tick:
+  ├─ pms.read(data) → PMAirData
+  ├─ latest_data = { pm1, pm2_5, pm10 }     // overwrites previous
+  └─ Serial.printf("[Sensor Task] Local Realtime -> ...")
+
+taskUploadToCloud()  every upload_interval:
+  ├─ skip if WiFi.status() != WL_CONNECTED
+  ├─ skip if !latest_data.has_value()
+  ├─ build JSON {"pm1":..,"pm2_5":..,"pm10":..}
+  ├─ WiFiClientSecure (setInsecure) → HTTPClient POST
+  ├─ log Response Code
+  └─ clear latest_data   ← unblocks the next sample
+```
+
+Because `taskReadSensor` overwrites `latest_data` and `taskUploadToCloud` clears it afterwards, **only the freshest pending reading is uploaded** — historical samples are dropped on purpose so that recovery from a long offline period doesn’t dump a flood of stale data into Supabase.
 
 ### Build & flash
 
 ```bash
 cd firmware
 pio run -e d1 -t upload     # compile + flash over USB
-pio device monitor          # open serial monitor @ 9600
+pio device monitor          # serial monitor @ 9600
 ```
 
-### Intended behaviour (`src/main.cpp`)
+Expected boot output:
 
-- Connect to Wi‑Fi on boot (blocking, with timeout + retry).
-- Drive the PMS7003 via `SoftwareSerial` on `D1`/`D2`, request passive‑mode frames every `READING_INTERVAL_MS`.
-- Parse the 32‑byte PMS frame (see the [datasheet](https://cdn-shop.adafruit.com/product-files/4632/PM25_AQI.pdf)): validate the start bytes (`0x42 0x4D`), length (28), and checksum before trusting the payload.
-- Compute AQI from PM2.5 using the US EPA breakpoint table.
-- `POST` the sample to `${SUPABASE_URL}/rest/v1/readings` with the `apikey` and `Authorization` headers set to the service role key.
-- Print structured logs (`[INFO]`, `[WARN]`, `[ERR]`) over UART for debugging.
-
-> The file is currently empty — fill it in using the outline above.
+```text
+Starting WiFi connection in background...
+System Ready! Starting main loops.
+[Sensor Task] Local Realtime -> PM1: 3 | PM2.5: 5 | PM10: 6
+…
+[Cloud Task] Online! Uploading to Supabase...
+[Cloud Task] Response Code: 201
+```
 
 ---
 
 ## 🖥 Dashboard (`app/`)
 
-SvelteKit 2 + Svelte 5 + Tailwind 4, deployed with the Vercel adapter.
-
-### Local development
+SvelteKit 2 + Svelte 5 (runes mode forced) + Tailwind 4, deployed with the Vercel adapter. **`+page.svelte` is still the SvelteKit welcome page.** Wiring it to Supabase is the next step in the roadmap below.
 
 ```bash
 cd app
 pnpm install
-cp .env.example .env        # fill in values below
 pnpm dev                    # http://localhost:5173
 ```
 
-### Environment variables
+Build / preview:
 
-Put these in `app/.env` (and in the Vercel project settings):
+```bash
+pnpm check        # svelte-check (svelte + ts diagnostics)
+pnpm lint         # prettier --check + eslint
+pnpm build        # Vercel-ready via @sveltejs/adapter-vercel
+pnpm preview      # smoke-test the production build
+```
+
+When you do wire it up, the env vars will be:
 
 ```bash
 PUBLIC_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
-PUBLIC_SUPABASE_ANON_KEY=ey...anon-key...
+PUBLIC_SUPABASE_ANON_KEY=ey...
 ```
 
-> Any var prefixed `PUBLIC_` is exposed to the browser by SvelteKit, which is what we want — the **anon** key is safe in client code as long as RLS is enabled.
-
-### Build & deploy
-
-```bash
-pnpm build                  # outputs a Vercel-ready build via @sveltejs/adapter-vercel
-pnpm preview                # smoke-test the production build locally
-```
-
-Deploy options:
-
-- **Vercel dashboard** — import this repo, set the two env vars above, framework auto‑detected as SvelteKit.
-- **Vercel CLI** — `vercel --prod` from the `app/` directory.
-
-### Intended features
-
-- A landing page with the **latest PM2.5 reading** + AQI badge, colour‑coded by US EPA bands.
-- A **time‑series chart** (PM1.0 / PM2.5 / PM10 over the last 24 h) using a library like `layerchart` or `chart.js`.
-- A **recent readings table** with pagination.
-- **Supabase Realtime** subscription so new samples appear without a page refresh.
-
-The current `+page.svelte` is the SvelteKit starter — replace it with the dashboard routes above.
-
----
-
-## 📐 US EPA AQI breakpoints (for reference)
-
-| AQI   | PM2.5 (μg/m³) | Air quality   |
-| ----- | ------------- | ------------- |
-| 0–50  | 0.0–12.0      | Good 🟢       |
-| 51–100| 12.1–35.4     | Moderate 🟡   |
-| 101–150 | 35.5–55.4   | Unhealthy for sensitive 🟠 |
-| 151–200 | 55.5–150.4  | Unhealthy 🔴  |
-| 201–300 | 150.5–250.4 | Very unhealthy 🟣 |
-| 301+  | 250.5+       | Hazardous 🟤  |
-
-Implementation in firmware or dashboard — pick whichever side owns the formula. The README uses EPA's PM2.5 breakpoints from [AirNow.gov](https://www.airnow.gov/aqi/aqi-basics/).
+…used by `$lib/supabase.ts` and a `+page.server.ts` `load` that selects the most recent N rows from `pm_logs`.
 
 ---
 
 ## 🛠 Development workflow
 
 ```bash
-# Top-level (no root package.json — each project manages its own deps)
-(cd firmware && pio run -e d1)           # build firmware
-(cd app      && pnpm install && pnpm dev) # run dashboard
-```
+# Firmware
+(cd firmware && pio run -e d1 -t upload && pio device monitor)
 
-Lint / type‑check the dashboard:
-
-```bash
-cd app
-pnpm lint         # prettier --check + eslint
-pnpm check        # svelte-check (svelte + ts diagnostics)
+# Dashboard
+(cd app && pnpm install && pnpm dev)
 ```
 
 ---
 
 ## 🗺 Roadmap
 
-- [ ] Firmware: Wi‑Fi connect + PMS7003 frame parser
-- [ ] Firmware: Supabase REST `POST` of readings
-- [ ] Firmware: AQI computation + serial logging
-- [ ] Dashboard: latest‑reading card + AQI badge
-- [ ] Dashboard: time‑series chart
-- [ ] Dashboard: Realtime channel subscription
-- [ ] OTA firmware updates (`ArduinoOTA` or HTTP)
-- [ ] Add DHT22/BME280 for temperature & humidity alongside PM
-- [ ] Multi‑device support (filter by `device_id`)
+- [ ] Move firmware credentials from `constexpr`s to `firmware/include/secrets.h` + `.gitignore` it
+- [ ] Use Supabase **service role** key for device writes (keep anon read‑only on `pm_logs`)
+- [ ] Dashboard: latest‑reading card + PM2.5 AQI badge (EPA breakpoints)
+- [ ] Dashboard: time‑series chart (e.g. `layerchart` / `chart.js`)
+- [ ] Dashboard: subscribe to Supabase Realtime for live updates
+- [ ] Multi‑device support — add a `device_id` column populated from `ESP.getChipId()` (or `WiFi.macAddress()`)
+- [ ] NTP‑synced `recorded_at`; today it relies on Supabase’s `default now()` server clock
+- [ ] Soft‑access control: lock down the `insert` policy to devices you whitelist
+- [ ] OTA updates (`ArduinoOTA` or HTTP pull)
+- [ ] Add DHT22 / BME280 for temperature & humidity alongside PM
 
 ---
 
 ## 🩺 Troubleshooting
 
-| Symptom                       | Likely cause                                         |
-| ----------------------------- | ---------------------------------------------------- |
-| Serial monitor prints garbage | Baud mismatch (must be 9600) or TX/RX swapped        |
-| Readings stuck near 0         | Sensor fan not spinning — check 5 V supply           |
-| `401 Unauthorized` from Supabase | Wrong API key; firmware needs **service_role**, not anon |
-| `400 Bad Request` on insert   | Column type mismatch — `pm*` values must be `real`, not integer |
-| Dashboard loads but no data  | RLS policy missing the `select` rule, or wrong URL/key |
-| `brownout detector was triggered` | USB cable is charge‑only or under‑current — use a data cable or a stronger supply |
+| Symptom                                       | Likely cause                                                                    |
+| --------------------------------------------- | ------------------------------------------------------------------------------- |
+| Serial monitor prints garbage                 | Baud mismatch (must be 9600) or TX/RX swapped                                   |
+| Readings stuck near 0                         | Sensor fan not spinning — check the 5 V supply on VIN                            |
+| `401 Unauthorized` from Supabase              | Wrong API key, or you switched the project URL                                   |
+| `400 Bad Request` on insert                   | Column mismatch — the firmware sends `pm1`, `pm2_5`, `pm10` integers             |
+| Dashboard loads but reads won’t come in       | RLS `select` policy missing, or the `pm_logs` name in the URL is wrong           |
+| Firmware hangs right after `WiFi.begin(...)`   | Wrong SSID/password; it will retry but boot stalls on first connect              |
+| `brownout detector was triggered`             | USB cable is charge‑only or under‑current — use a data cable or a stronger supply |
+| Frames returned but values are implausible     | PMS7003 needs ≥ 1 s of stable airflow per read; reduce noise sources or move the sensor |
 
 ---
 
@@ -310,5 +286,6 @@ MIT — see [`LICENSE`](./LICENSE). © 2026 Phukrit Kittinontana.
 ## 🙏 Acknowledgements
 
 - [Plantower](https://www.plantower.com/) for the PMS7003 sensor and reference frame format.
-- [AirNow](https://www.airnow.gov/) for the AQI breakpoints used by US embassies worldwide.
-- The Svelte, Supabase and PlatformIO communities for the excellent docs that make this stack achievable on a weekend.
+- [fu‑hsi/PMS](https://github.com/fu-hsi/PMS) for the parser library used in `firmware/src/main.cpp`.
+- [AirNow](https://www.airnow.gov/) for the EPA AQI breakpoints used by US embassies worldwide.
+- The Svelte, Supabase and PlatformIO communities for the docs that make this kind of stack achievable in a weekend.

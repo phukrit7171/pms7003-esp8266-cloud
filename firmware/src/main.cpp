@@ -106,7 +106,7 @@ void taskUploadToCloud() {
 
 void setup() {
     Serial.begin(9600);
-    pmsSerial.begin(9600, SWSERIAL_8N1, 14, 12);
+    pmsSerial.begin(9600, SWSERIAL_8N1, /*RX=*/14, /*TX=*/13);
 
     snprintf(auth_token_buffer, sizeof(auth_token_buffer), "Bearer %s", supabase_anon_key);
 
