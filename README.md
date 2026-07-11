@@ -7,10 +7,11 @@ flowchart LR
   PMS[PMS7003 sensor] -- UART<br/>GPIO14 (RX) / GPIO13 (TX) --> MCU[WeMos D1 R1<br/>ESP8266]
   MCU -- Wi‑Fi / HTTPS<br/>POST /rest/v1/pm_logs --> SB[(Supabase Postgres<br/>pm_logs table)]
   SB -- PostgREST --> App[SvelteKit dashboard<br/>Vercel]
+  SB -- Realtime WS<br/>postgres_changes --> App
   User([Browser]) --> App
 ```
 
-> The firmware on `firmware/src/main.cpp` is implemented and uploading today. The SvelteKit dashboard under `app/src/routes/` is still the default starter page — see [Roadmap](#-roadmap).
+> The firmware on `firmware/src/main.cpp` is implemented and uploading today. The SvelteKit dashboard renders the latest samples live via Supabase Realtime — see the [Dashboard](#-dashboard-app) section below.
 
 For the hardware build (BOM, wiring, pin-safety rationale, first-power-up checklist), see [`firmware/hardware/README.md`](firmware/hardware/README.md).
 
@@ -209,7 +210,7 @@ System Ready! Starting main loops.
 
 ## 🖥 Dashboard (`app/`)
 
-SvelteKit 2 + Svelte 5 (runes mode forced) + Tailwind 4, deployed with the Vercel adapter. **`+page.svelte` is still the SvelteKit welcome page.** Wiring it to Supabase is the next step in the roadmap below.
+SvelteKit 2 + Svelte 5 (runes mode forced) + Tailwind 4, deployed with the Vercel adapter. `+page.svelte` shows the latest reading, an AQI badge, a PM time‑series chart, and a recent‑samples table. New rows from the firmware are streamed live via Supabase Realtime (`postgres_changes` INSERT on `public.pm_logs`); the page unsubscribes while the tab is hidden and refetches once on return to backfill any rows that arrived in the meantime.
 
 ```bash
 cd app
@@ -255,7 +256,7 @@ PUBLIC_SUPABASE_ANON_KEY=ey...
 - [ ] Use Supabase **service role** key for device writes (keep anon read‑only on `pm_logs`)
 - [ ] Dashboard: latest‑reading card + PM2.5 AQI badge (EPA breakpoints)
 - [ ] Dashboard: time‑series chart (e.g. `layerchart` / `chart.js`)
-- [ ] Dashboard: subscribe to Supabase Realtime for live updates
+- [x] Dashboard: subscribe to Supabase Realtime for live updates
 - [ ] Multi‑device support — add a `device_id` column populated from `ESP.getChipId()` (or `WiFi.macAddress()`)
 - [ ] NTP‑synced `recorded_at`; today it relies on Supabase’s `default now()` server clock
 - [ ] Soft‑access control: lock down the `insert` policy to devices you whitelist
