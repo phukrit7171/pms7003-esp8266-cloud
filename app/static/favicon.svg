@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img">
+	<title>PMS7003 air quality monitor</title>
+	<rect width="64" height="64" rx="16" fill="#020617" />
+	<path
+		d="M12 21h24c4.4 0 7 2.1 7 5.2S40.4 31 36 31H23"
+		fill="none"
+		stroke="#38bdf8"
+		stroke-linecap="round"
+		stroke-width="4"
+	/>
+	<path
+		d="M13 35h15c3.5 0 5.5 1.7 5.5 4.2S31.5 44 28 44h-5"
+		fill="none"
+		stroke="#34d399"
+		stroke-linecap="round"
+		stroke-width="4"
+	/>
+	<circle cx="13" cy="47" r="3" fill="#fb923c" />
+	<rect x="38" y="37" width="5" height="13" rx="2.5" fill="#38bdf8" />
+	<rect x="46" y="32" width="5" height="18" rx="2.5" fill="#34d399" />
+	<rect x="54" y="26" width="5" height="24" rx="2.5" fill="#fb923c" />
+</svg>

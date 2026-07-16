@@ -5,15 +5,16 @@
 
 	interface Props {
 		reading: PmLog | null;
+		now?: number;
 	}
 
-	let { reading }: Props = $props();
+	let { reading, now = 0 }: Props = $props();
 
 	const pm25 = $derived(reading?.pm2_5 ?? null);
 	const pm10 = $derived(reading?.pm10 ?? null);
 	const pm25Aqi = $derived(pm25 === null ? null : pm25Info(pm25));
 	const recordedAt = $derived(reading?.created_at ?? null);
-	const recordedRel = $derived(relativeTime(recordedAt));
+	const recordedRel = $derived(relativeTime(recordedAt, now ? new Date(now) : new Date()));
 </script>
 
 <section

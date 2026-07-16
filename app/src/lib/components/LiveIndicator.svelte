@@ -4,9 +4,10 @@
 	interface Props {
 		status: Status;
 		lastUpdated: Date | null;
+		now?: number;
 	}
 
-	let { status, lastUpdated }: Props = $props();
+	let { status, lastUpdated, now = 0 }: Props = $props();
 
 	const statusMeta = $derived.by(() => {
 		switch (status) {
@@ -25,8 +26,8 @@
 
 	const updatedLabel = $derived.by(() => {
 		if (!lastUpdated) return 'never';
-		const diff = Math.max(0, Math.round((Date.now() - lastUpdated.getTime()) / 1000));
-		if (diff < 5) return 'just now';
+		const currentTime = now || Date.now();
+		const diff = Math.max(0, Math.round((currentTime - lastUpdated.getTime()) / 1000));
 		if (diff < 60) return `${diff}s ago`;
 		return `${Math.round(diff / 60)}m ago`;
 	});
