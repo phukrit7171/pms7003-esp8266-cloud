@@ -1,15 +1,26 @@
 <script lang="ts">
 	import type { PmLog } from '$lib/supabase';
 
+	export type PmSeriesKey = 'pm1' | 'pm2_5' | 'pm10';
+
 	interface Props {
 		logs: PmLog[];
 		height?: number;
+		activeSeries?: PmSeriesKey[];
+		onToggleSeries?: (key: PmSeriesKey) => void;
 	}
 
-	let { logs, height = 320 }: Props = $props();
+	const DEFAULT_ACTIVE_SERIES: PmSeriesKey[] = ['pm1', 'pm2_5', 'pm10'];
+
+	let {
+		logs,
+		height = 320,
+		activeSeries = DEFAULT_ACTIVE_SERIES,
+		onToggleSeries
+	}: Props = $props();
 
 	type Series = {
-		key: 'pm1' | 'pm2_5' | 'pm10';
+		key: PmSeriesKey;
 		label: string;
 		color: string;
 	};
@@ -27,6 +38,8 @@
 		{ key: 'pm10', label: 'PM10', color: '#a78bfa' }
 	];
 
+	const visibleSeries = $derived(SERIES.filter((series) => activeSeries.includes(series.key)));
+
 	const PAD = { top: 16, right: 16, bottom: 28, left: 44 };
 
 	const points = $derived<Point[]>(
@@ -37,16 +50,21 @@
 				pm2_5: log.pm2_5,
 				pm10: log.pm10
 			}))
-			.filter((p) => Number.isFinite(p.t))
-			.sort((a, b) => a.t - b.t)
+			.filter(
+				(p) =>
+					Number.isFinite(p.t) &&
+					Number.isFinite(p.pm1) &&
+					Number.isFinite(p.pm2_5) &&
+					Number.isFinite(p.pm10)
+			)
 	);
 
-	const hasData = $derived(points.length > 0);
+	const hasData = $derived(points.length > 0 && visibleSeries.length > 0);
 
 	const bounds = $derived.by(() => {
 		if (!hasData) return { xMin: 0, xMax: 1, yMin: 0, yMax: 100 };
 		const xs = points.map((p) => p.t);
-		const ys = points.flatMap((p) => [p.pm1, p.pm2_5, p.pm10]);
+		const ys = points.flatMap((p) => visibleSeries.map((series) => p[series.key]));
 		const yMaxRaw = Math.max(...ys, 10);
 		const yMin = 0;
 		const yMax = Math.ceil(yMaxRaw / 10) * 10;
@@ -79,7 +97,7 @@
 		return PAD.top + innerHeight - ((v - bounds.yMin) / (bounds.yMax - bounds.yMin)) * innerHeight;
 	}
 
-	function buildPath(key: Series['key']): string {
+	function buildPath(key: PmSeriesKey): string {
 		if (!hasData) return '';
 		return points
 			.map((p, i) => {
@@ -88,6 +106,12 @@
 				return `${i === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
 			})
 			.join(' ');
+	}
+
+	function formatPoint(point: Point, series: Series): string {
+		return `${series.label}: ${point[series.key].toLocaleString(undefined, {
+			maximumFractionDigits: 1
+		})} μg/m³ at ${new Date(point.t).toLocaleString()}`;
 	}
 
 	const yTicks = $derived.by(() => {
@@ -130,7 +154,7 @@
 		width="100%"
 		{height}
 		role="img"
-		aria-label="PM1.0, PM2.5 and PM10 over time"
+		aria-label={`${visibleSeries.map((series) => series.label).join(', ')} over time`}
 	>
 		<defs>
 			<linearGradient id="chart-bg" x1="0" x2="0" y1="0" y2="1">
@@ -174,7 +198,7 @@
 				</text>
 			{/each}
 
-			{#each SERIES as series (series.key)}
+			{#each visibleSeries as series (series.key)}
 				<path
 					d={buildPath(series.key)}
 					fill="none"
@@ -186,7 +210,7 @@
 				/>
 			{/each}
 
-			{#each SERIES as series (series.key)}
+			{#each visibleSeries as series (series.key)}
 				{#each points as p, i (i + '-' + series.key)}
 					<circle
 						cx={xScale(p.t)}
@@ -194,7 +218,9 @@
 						r="2"
 						fill={series.color}
 						opacity="0.6"
-					/>
+					>
+						<title>{formatPoint(p, series)}</title>
+					</circle>
 				{/each}
 			{/each}
 		{:else}
@@ -213,14 +239,36 @@
 
 <div class="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-400">
 	{#each SERIES as series (series.key)}
-		<span class="inline-flex items-center gap-1.5">
-			<span
-				class="inline-block h-2 w-3 rounded-sm"
-				style:background-color={series.color}
-				aria-hidden="true"
-			></span>
-			{series.label}
-		</span>
+		{#if onToggleSeries}
+			<button
+				type="button"
+				class="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 transition hover:bg-white/10 {activeSeries.includes(
+					series.key
+				)
+					? 'text-slate-300'
+					: 'text-slate-600'}"
+				aria-pressed={activeSeries.includes(series.key)}
+				onclick={() => onToggleSeries?.(series.key)}
+			>
+				<span
+					class="inline-block h-2 w-3 rounded-sm {activeSeries.includes(series.key)
+						? ''
+						: 'opacity-30'}"
+					style:background-color={series.color}
+					aria-hidden="true"
+				></span>
+				{series.label}
+			</button>
+		{:else}
+			<span class="inline-flex items-center gap-1.5">
+				<span
+					class="inline-block h-2 w-3 rounded-sm"
+					style:background-color={series.color}
+					aria-hidden="true"
+				></span>
+				{series.label}
+			</span>
+		{/if}
 	{/each}
 	<span class="ml-auto text-slate-500">
 		{points.length} sample{points.length === 1 ? '' : 's'}

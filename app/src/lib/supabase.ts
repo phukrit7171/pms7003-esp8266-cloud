@@ -52,29 +52,59 @@ export function getSupabaseClient(): SupabaseClient {
 }
 
 export async function fetchPmLogs(
-	opts: { limit?: number; signal?: AbortSignal; fetcher?: typeof fetch } = {}
+	opts: {
+		limit?: number;
+		pageSize?: number;
+		from?: string;
+		to?: string;
+		signal?: AbortSignal;
+		fetcher?: typeof fetch;
+	} = {}
 ): Promise<PmLog[]> {
 	const { url, anonKey } = readConfig();
 	if (!url || !anonKey) return [];
 
 	const limit = opts.limit ?? 200;
-	const endpoint = `${url.replace(/\/$/, '')}/rest/v1/pm_logs?select=id,pm1,pm2_5,pm10,created_at&order=created_at.desc&limit=${limit}`;
+	if (limit <= 0) return [];
 
+	const pageSize = Math.max(1, Math.min(opts.pageSize ?? limit, 1000));
+	const paginate = opts.pageSize !== undefined;
 	const f = opts.fetcher ?? fetch;
-	const res = await f(endpoint, {
-		headers: {
-			apikey: anonKey,
-			Authorization: `Bearer ${anonKey}`,
-			Accept: 'application/json'
-		},
-		signal: opts.signal
-	});
+	const rows: PmLog[] = [];
+	let offset = 0;
 
-	if (!res.ok) {
-		throw new Error(`Supabase request failed: ${res.status} ${res.statusText}`);
+	while (rows.length < limit) {
+		const requestLimit = Math.min(pageSize, limit - rows.length);
+		const params = new URLSearchParams({
+			select: 'id,pm1,pm2_5,pm10,created_at',
+			order: 'created_at.desc',
+			limit: String(requestLimit),
+			offset: String(offset)
+		});
+		if (opts.from) params.append('created_at', `gte.${opts.from}`);
+		if (opts.to) params.append('created_at', `lt.${opts.to}`);
+
+		const endpoint = `${url.replace(/\/$/, '')}/rest/v1/pm_logs?${params.toString()}`;
+		const res = await f(endpoint, {
+			headers: {
+				apikey: anonKey,
+				Authorization: `Bearer ${anonKey}`,
+				Accept: 'application/json'
+			},
+			signal: opts.signal
+		});
+
+		if (!res.ok) {
+			throw new Error(`Supabase request failed: ${res.status} ${res.statusText}`);
+		}
+
+		const page = (await res.json()) as PmLog[];
+		rows.push(...page);
+
+		if (!paginate || page.length < requestLimit) break;
+		offset += page.length;
 	}
 
-	const rows = (await res.json()) as PmLog[];
 	return rows;
 }
 
