@@ -1,42 +1,32 @@
-# sv
+# PMS7003 dashboard
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+The SvelteKit dashboard displays the latest PM1.0, PM2.5, and PM10 samples from Supabase. It loads recent history over PostgREST and receives new rows through Supabase Realtime.
 
-## Creating a project
+## Configure
 
-If you're seeing this, you've probably already done this step. Congrats!
+Copy `.env.example` to `.env` and set the public project URL and anon key:
 
-```sh
-# create a new project
-npx sv create my-app
+```bash
+PUBLIC_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 ```
 
-To recreate this project with the same configuration:
+The `pm_logs` table, RLS policies, and `supabase_realtime` publication are documented in the repository [README](../README.md#-supabase-setup).
 
-```sh
-# recreate this project
-pnpm dlx sv@0.16.2 create --template minimal --types ts --add tailwindcss="plugins:typography" mcp="ide:claude-code,cursor,gemini,opencode,vscode,other+setup:remote" sveltekit-adapter="adapter:vercel" eslint prettier --install pnpm app
+## Develop
+
+```bash
+pnpm install
+pnpm dev
 ```
 
-## Developing
+## Verify and build
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
+```bash
+pnpm test
+pnpm check
+pnpm lint
+pnpm build
 ```
 
-## Building
-
-To create a production version of your app:
-
-```sh
-npm run build
-```
-
-You can preview the production build with `npm run preview`.
-
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+The app uses `@sveltejs/adapter-vercel` and is ready to deploy to Vercel once the two public environment variables are configured there.

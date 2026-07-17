@@ -1,6 +1,6 @@
 # PMS7003 Cloud Air‑Quality Monitor
 
-A **PM1.0 / PM2.5 / PM10 air‑quality monitoring** stack: a **WeMos D1 R1** (ESP8266) reads a **PMS7003** particulate‑matter sensor over UART, `POST`s each sample to **Supabase**, and a **SvelteKit** dashboard (deployed to **Vercel**) renders the data — currently a placeholder while the firmware side is live.
+A **PM1.0 / PM2.5 / PM10 air-quality monitoring** stack: a **WeMos D1 R1** (ESP8266) reads a **PMS7003** particulate-matter sensor over UART, `POST`s each sample to **Supabase**, and a **SvelteKit** dashboard (deployed to **Vercel**) shows live and historical readings.
 
 ```mermaid
 flowchart LR
@@ -82,35 +82,37 @@ pms7003-esp8266-cloud/
 
 ### Wiring
 
-The PMS7003 speaks UART at **9600 8N1**. The firmware uses `SoftwareSerial` on `D5`/`D6` (ESP8266 GPIOs 14 / 12), which avoids the UART0 pins shared with the USB‑serial chip used for flashing.
+The PMS7003 speaks UART at **9600 8N1**. The firmware uses `SoftwareSerial` with **D5 / GPIO14 as RX** and **D7 / GPIO13 as TX**, avoiding the UART0 pins shared with the USB-serial chip used for flashing.
 
-| PMS7003 pin | Wire     | WeMos D1 R1 pin | Notes                          |
-| ----------- | -------- | --------------- | ------------------------------ |
-| 1 VCC       | red      | **5V / VIN**    | Sensor fan needs 5 V           |
-| 2 GND       | black    | **G**           | Common ground                  |
-| 5 RX        | green    | **D5** (GPIO14) | MCU **TX** → sensor **RX**    |
-| 6 TX        | yellow   | **D6** (GPIO12) | Sensor **TX** → MCU **RX**    |
-| 3 / 4 / 7 / 8 | —      | leave floating  | RESET, SET, NC                |
+| PMS7003 pin | Wire   | WeMos D1 R1 pin | Notes                       |
+| ----------- | ------ | --------------- | --------------------------- |
+| 1 and 2 VCC | red    | **5V / VIN**    | Tie both VCC pins to 5 V    |
+| 3 and 4 GND | black  | **G**           | Tie both GND pins to ground |
+| 7 RX        | yellow | **D7** (GPIO13) | MCU **TX** → sensor **RX** |
+| 9 TX        | green  | **D5** (GPIO14) | Sensor **TX** → MCU **RX** |
+| 5 RESET, 6/8 NC, 10 SET | — | leave floating | No connection required |
 
 ```mermaid
 graph LR
   PMS[PMS7003] -- VCC --> VIN[VIN 5V]
   PMS -- GND --> GND[GND]
-  PMS -- RX --> D5[D5 GPIO14]
-  PMS -- TX --> D6[D6 GPIO12]
+  PMS -- RX --> D7[D7 GPIO13]
+  PMS -- TX --> D5[D5 GPIO14]
   VIN -. power .-> MCU[WeMos D1 R1]
   GND -. ground .-> MCU
+  D7 -. UART .-> MCU
   D5 -. UART .-> MCU
-  D6 -. UART .-> MCU
 ```
 
 > If you see garbled frames, double‑check the TX/RX crossover — sensor RX must face MCU TX, and vice versa. Let the fan settle **≥ 30 s** before trusting the first reading.
+
+For the complete connector pinout and boot-safety notes, see [`firmware/hardware/README.md`](firmware/hardware/README.md).
 
 ---
 
 ## ☁️ Supabase setup
 
-### 1. Create the table
+### 1. Create the table, permissions, and Realtime publication
 
 In **SQL editor**, run:
 
@@ -129,13 +131,24 @@ create index pm_logs_created_at_idx
 -- Row Level Security
 alter table public.pm_logs enable row level security;
 
--- Dashboard reads via the anon key.
+-- The dashboard reads and the single sensor writes with the anon key.
+grant select, insert on public.pm_logs to anon;
+
 create policy "pm_logs are publicly readable"
-  on public.pm_logs for select
+  on public.pm_logs for select to anon
   using (true);
+
+create policy "pm_logs accept sensor inserts"
+  on public.pm_logs for insert to anon
+  with check (true);
+
+-- Required for the dashboard's postgres_changes subscription.
+alter publication supabase_realtime add table public.pm_logs;
 ```
 
 > The firmware payload is `{"pm1":..,"pm2_5":..,"pm10":..}` — the column names must match exactly.
+
+> If Realtime is already enabled for `pm_logs` in the Supabase Dashboard's Replication/Publications settings, do not run the `alter publication` statement again.
 
 ### 2. Grab the keys
 
@@ -143,28 +156,35 @@ From **Project Settings → API** you need:
 
 | Key                         | Where it's used                  |
 | --------------------------- | -------------------------------- |
-| **Project URL**             | `supabase_url` in `main.cpp`     |
-| **anon public** key         | `supabase_anon_key` in `main.cpp` (and in the SvelteKit app once you wire it) |
+| **Project URL**             | `custom_supabase_url` in `firmware/secrets.ini`     |
+| **anon public** key         | `custom_supabase_key` in `firmware/secrets.ini` and the SvelteKit app |
 
-> ⚠️ The current `main.cpp` uses the **anon** key from the device. That works because of the `select` policy above; for production you'll likely want to lock down writes to a service role and add a small access control layer. See [Roadmap](#-roadmap).
+The Supabase anon key is intentionally public: it is also included in the dashboard. Since particulate data is non-sensitive, allowing public reads and sensor inserts is a reasonable hobby-project trade-off. The risk is **data integrity and usage cost**—someone can submit false readings using that key. Never put a Supabase service-role key on the ESP8266. If that trade-off becomes unsuitable, send readings to an Edge Function that keeps the service-role key server-side and validates a per-device credential before inserting.
 
 ---
 
 ## 🔧 Firmware (`firmware/`)
 
-### Config — currently hardcoded
+### Configuration (`secrets.ini`)
 
-`firmware/src/main.cpp` exposes its config at the top of the file:
+The firmware reads credentials from PlatformIO build flags; they are not hardcoded in `main.cpp`. Create the ignored configuration file from the [sanitized template](firmware/secrets.ini.example):
 
-```cpp
-constexpr auto ssid              = "Phukrit";
-constexpr auto password          = "...";
-constexpr auto supabase_url      = "https://wvvfbosiwsevcroxbmod.supabase.co/rest/v1/pm_logs";
-constexpr auto supabase_anon_key = "...";
-constexpr uint32_t upload_interval = 60000;   // 60 s
+```bash
+cd firmware
+cp secrets.ini.example secrets.ini
 ```
 
-Edit those four lines (and paste in your Wi‑Fi + Supabase keys), then flash. The credentials live in source today — fine for a single‑device private project, **not** fine the moment you push this to a public repo. Consider moving them to `firmware/include/secrets.h` and `#include`ing it; PIO picks up files in `include/` automatically. The space is already reserved.
+Set the values in `secrets.ini`, including the complete REST endpoint:
+
+```ini
+[env:d1]
+custom_wifi_ssid = your-wifi-name
+custom_wifi_pass = your-wifi-password
+custom_supabase_url = https://YOUR-PROJECT.supabase.co/rest/v1/pm_logs
+custom_supabase_key = your-anon-key
+```
+
+`secrets.ini` is gitignored and must not be committed. The upload interval remains `60,000 ms` in `firmware/src/main.cpp`.
 
 ### How it behaves
 
@@ -252,10 +272,10 @@ PUBLIC_SUPABASE_ANON_KEY=ey...
 
 ## 🗺 Roadmap
 
-- [ ] Move firmware credentials from `constexpr`s to `firmware/include/secrets.h` + `.gitignore` it
-- [ ] Use Supabase **service role** key for device writes (keep anon read‑only on `pm_logs`)
-- [ ] Dashboard: latest‑reading card + PM2.5 AQI badge (EPA breakpoints)
-- [ ] Dashboard: time‑series chart (e.g. `layerchart` / `chart.js`)
+- [x] Keep firmware credentials in ignored `firmware/secrets.ini` PlatformIO build flags
+- [ ] Send device writes through an Edge Function with a per-device credential (keep the Supabase service-role key server-side and anon read-only on `pm_logs`)
+- [x] Dashboard: latest-reading card + PM2.5 AQI badge (EPA breakpoints)
+- [x] Dashboard: time-series chart
 - [x] Dashboard: subscribe to Supabase Realtime for live updates
 - [ ] Multi‑device support — add a `device_id` column populated from `ESP.getChipId()` (or `WiFi.macAddress()`)
 - [ ] NTP‑synced `recorded_at`; today it relies on Supabase’s `default now()` server clock
@@ -273,10 +293,10 @@ PUBLIC_SUPABASE_ANON_KEY=ey...
 | Readings stuck near 0                         | Sensor fan not spinning — check the 5 V supply on VIN                            |
 | `401 Unauthorized` from Supabase              | Wrong API key, or you switched the project URL                                   |
 | `400 Bad Request` on insert                   | Column mismatch — the firmware sends `pm1`, `pm2_5`, `pm10` integers             |
-| Dashboard loads but reads won’t come in       | RLS `select` policy missing, or the `pm_logs` name in the URL is wrong           |
-| Firmware hangs right after `WiFi.begin(...)`   | Wrong SSID/password; it will retry but boot stalls on first connect              |
-| `brownout detector was triggered`             | USB cable is charge‑only or under‑current — use a data cable or a stronger supply |
-| Frames returned but values are implausible     | PMS7003 needs ≥ 1 s of stable airflow per read; reduce noise sources or move the sensor |
+| Dashboard loads but live reads do not appear  | Enable `pm_logs` in the `supabase_realtime` publication and verify the `select` policy |
+| Firmware stays offline                        | Check the SSID/password and 2.4 GHz Wi-Fi availability; `WiFi.begin()` is non-blocking |
+| ESP8266 resets or the PMS7003 fan stops       | USB supply is under-powered; use a data-capable cable and a stable 5 V source     |
+| Frames returned but values are implausible     | Let the PMS7003 warm up for at least 30 s, then check airflow and the 5 V supply  |
 
 ---
 
